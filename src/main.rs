@@ -35,10 +35,7 @@ fn main() {
     while !app.should_quit && app.loop_count < max_loops {
         let prd = prd::load_prd_from_file(prd_path);
         let completed = prd::load_completed_tasks_from_file(prd_path);
-        app.reload_progress(
-            prd.tasks.len(),
-            completed.map_or(0, |t| t.len()),
-        );
+        app.reload_progress(prd.tasks.len(), completed.map_or(0, |t| t.len()));
 
         app.increment_loop();
         app.set_status("Spawning Claude...");
@@ -65,12 +62,34 @@ fn main() {
                         // q/Q: quit after Claude finishes
                         (KeyCode::Char('q') | KeyCode::Char('Q'), _) => {
                             app.should_quit = true;
-                            app.set_status("Will quit after Claude finishes this loop... (r=resume)");
+                            app.set_status(
+                                "Will quit after Claude finishes this loop... (r=resume)",
+                            );
                         }
                         // r/R: resume (cancel quit)
                         (KeyCode::Char('r') | KeyCode::Char('R'), _) => {
                             app.should_quit = false;
                             app.set_status("Resumed. Waiting for Claude...");
+                        }
+                        // Left/Right: navigate between iteration logs
+                        (KeyCode::Left, _) => {
+                            app.prev_log();
+                        }
+                        (KeyCode::Right, _) => {
+                            app.next_log();
+                        }
+                        // Up/Down: scroll within current log
+                        (KeyCode::Up, _) => {
+                            app.scroll_up(1);
+                        }
+                        (KeyCode::Down, _) => {
+                            app.scroll_down(1);
+                        }
+                        (KeyCode::PageUp, _) => {
+                            app.scroll_up(10);
+                        }
+                        (KeyCode::PageDown, _) => {
+                            app.scroll_down(10);
                         }
                         _ => {}
                     }
@@ -80,11 +99,16 @@ fn main() {
 
         let output = child.wait_with_output().expect("Failed to get output");
         let stdout = String::from_utf8_lossy(&output.stdout);
-        app.claude_output = stdout.to_string();
+        app.push_log(stdout.to_string());
 
-        if stdout.to_ascii_lowercase().contains(&exit_clause.to_ascii_lowercase()) {
-            app.set_status("PRD Complete!");
-            app.should_quit = true;
+        if let Some(latest) = app.latest_log() {
+            if latest
+                .to_ascii_lowercase()
+                .contains(&exit_clause.to_ascii_lowercase())
+            {
+                app.set_status("PRD Complete!");
+                app.should_quit = true;
+            }
         }
 
         terminal.draw(|f| app.draw(f)).expect("Failed to draw");
@@ -96,7 +120,7 @@ fn main() {
     println!("Ralph Session Complete");
     println!("Loops: {}", app.loop_count);
     println!("Final status: {}", app.status_message);
-    if !app.claude_output.is_empty() {
-        println!("\n─── Last Claude Output ───\n{}", app.claude_output);
+    if let Some(latest) = app.latest_log() {
+        println!("\n─── Last Claude Output ───\n{}", latest);
     }
 }
