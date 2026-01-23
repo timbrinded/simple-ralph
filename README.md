@@ -1,4 +1,4 @@
-# Ralooph
+# `simple ralph`
 
 ![simple-ralph](simple-ralph.png)
 
@@ -11,7 +11,7 @@ This is a CLI application for working on ralph loops.
 ## Requirements
 
 - Working claude code
-- A flat PRD file
+- A PRD JSON file
 
 ### PRD Specification
 

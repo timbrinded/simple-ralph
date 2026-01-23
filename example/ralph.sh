@@ -24,7 +24,7 @@ Keep only category, description, steps, and completed_at. Skip tasks already in 
 Use this to leave a note for the next person working in the code base. \
 6. Make a git commit of that feature. \
 Only work on a single feature. \
-If while implementing the feature, you notice the PRD is complete, output <promise>COMPLETE</promise>\
+If while implementing the feature, you notice the PRD is now complete (with no tasks remaining), output <promise>COMPLETE</promise>\
   " | tee "$tmp"
 
   if grep -q "<promise>COMPLETE</promise>" "$tmp"; then

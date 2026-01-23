@@ -1,85 +1,102 @@
 use clap::Parser;
-use crossterm::event::{Event, KeyCode, poll, read};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use indicatif::{ProgressBar, ProgressStyle};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use std::time::Duration;
-mod claude;
-mod prompt;
 
-static SHOULD_QUIT: AtomicBool = AtomicBool::new(false);
-static LOOP_COUNT: AtomicU64 = AtomicU64::new(0);
+mod app;
+mod claude;
+mod prd;
+mod prompt;
+mod tui;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
     #[arg(short, long)]
-    // Include description that this should be prd json
-    name: Option<String>,
+    prd_path: Option<String>,
+
+    #[arg(short = 'l', long)]
+    max_loops: Option<u64>,
 }
 
 fn main() {
     let args = Args::parse();
-
-    let cfg = args.name.as_deref().unwrap_or("plans/prd.json");
+    let prd_path = args.prd_path.as_deref().unwrap_or("plans/prd.json");
+    let max_loops = args.max_loops.unwrap_or(u64::MAX);
     let exit_clause = "<promise>COMPLETE</promise>";
 
-    loop {
-        let prompt = prompt::make_prompt(cfg);
-        let handle = std::thread::spawn(move || claude::launch_claude(&prompt));
+    let prd = prd::load_prd_from_file(prd_path);
+    let completed = prd::load_completed_tasks_from_file(prd_path);
+    let remaining = prd.tasks.len();
+    let completed_count = completed.map_or(0, |t| t.len());
 
-        println!(
-            "Starting Coding loop #{} (type 'f' to finish after this loop, 'r' to resume)",
-            LOOP_COUNT.fetch_add(1, Ordering::SeqCst)
+    let mut terminal = tui::init_terminal();
+    let mut app = app::App::new(&prd.name, remaining, completed_count);
+
+    while !app.should_quit && app.loop_count < max_loops {
+        let prd = prd::load_prd_from_file(prd_path);
+        let completed = prd::load_completed_tasks_from_file(prd_path);
+        app.reload_progress(
+            prd.tasks.len(),
+            completed.map_or(0, |t| t.len()),
         );
 
-        let spinner = ProgressBar::new_spinner();
-        spinner.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner} {msg} [{elapsed}]")
-                .expect("invalid template"),
-        );
-        spinner.set_message("Waiting for Claude...");
+        app.increment_loop();
+        app.set_status("Spawning Claude...");
+        terminal.draw(|f| app.draw(f)).expect("Failed to draw");
 
-        enable_raw_mode().expect("Failed to enable raw mode");
+        let prompt = prompt::make_prompt(prd_path);
+        let mut child = claude::launch_claude(&prompt);
 
-        while !handle.is_finished() {
-            if poll(Duration::from_millis(100)).expect("Poll failed") {
-                if let Event::Key(key_event) = read().expect("Failed to read event") {
-                    match key_event.code {
-                        KeyCode::Char('f') | KeyCode::Char('F') => {
-                            SHOULD_QUIT.store(true, Ordering::SeqCst);
-                            spinner.set_message("Finishing after this command... (R to resume)");
+        app.set_status("Waiting for Claude... (q=quit, r=resume, Ctrl+C=kill)");
+
+        while child.try_wait().expect("Failed to check child").is_none() {
+            terminal.draw(|f| app.draw(f)).expect("Failed to draw");
+
+            if event::poll(Duration::from_millis(100)).expect("Poll failed") {
+                if let Event::Key(key) = event::read().expect("Failed to read event") {
+                    match (key.code, key.modifiers) {
+                        // Ctrl+C: kill Claude and quit immediately
+                        (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+                            child.kill().expect("Failed to kill Claude");
+                            app.should_quit = true;
+                            app.set_status("Interrupted by user");
+                            break;
                         }
-                        KeyCode::Char('r') | KeyCode::Char('R') => {
-                            SHOULD_QUIT.store(false, Ordering::SeqCst);
-                            spinner.set_message("Waiting for Claude...");
+                        // q/Q: quit after Claude finishes
+                        (KeyCode::Char('q') | KeyCode::Char('Q'), _) => {
+                            app.should_quit = true;
+                            app.set_status("Will quit after Claude finishes this loop... (r=resume)");
+                        }
+                        // r/R: resume (cancel quit)
+                        (KeyCode::Char('r') | KeyCode::Char('R'), _) => {
+                            app.should_quit = false;
+                            app.set_status("Resumed. Waiting for Claude...");
                         }
                         _ => {}
                     }
                 }
             }
-            spinner.tick();
         }
 
-        disable_raw_mode().expect("Failed to disable raw mode");
-        spinner.finish_and_clear();
+        let output = child.wait_with_output().expect("Failed to get output");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        app.claude_output = stdout.to_string();
 
-        let result = handle.join().unwrap();
-        println!("Output: {}", result.trim());
-
-        if SHOULD_QUIT.load(Ordering::SeqCst) {
-            println!("Termination signal received. Exiting...");
-            break;
+        if stdout.to_ascii_lowercase().contains(&exit_clause.to_ascii_lowercase()) {
+            app.set_status("PRD Complete!");
+            app.should_quit = true;
         }
 
-        if result
-            .to_ascii_lowercase()
-            .contains(exit_clause.to_ascii_lowercase().as_str())
-        {
-            break;
-        }
+        terminal.draw(|f| app.draw(f)).expect("Failed to draw");
     }
 
-    println!("Completed greeting loop.");
+    tui::restore_terminal();
+
+    println!("\n═══════════════════════════════════════════════════════════════");
+    println!("Ralph Session Complete");
+    println!("Loops: {}", app.loop_count);
+    println!("Final status: {}", app.status_message);
+    if !app.claude_output.is_empty() {
+        println!("\n─── Last Claude Output ───\n{}", app.claude_output);
+    }
 }

@@ -1,1 +1,25 @@
+# Build
 /target
+
+# Cargo
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+requirements.txt
+
+# LLM
+.claude/
+.codex/
+CLAUDE.md
+AGENTS.md
