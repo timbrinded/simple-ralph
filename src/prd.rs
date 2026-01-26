@@ -36,15 +36,15 @@ pub fn load_completed_tasks_from_file(prd_path: &str) -> Option<Vec<CompletedTas
         return None;
     }
 
-    let file_content = std::fs::read_to_string(&completed_path).expect(&format!(
-        "Error reading completed.json at {:?}",
-        completed_path
-    ));
+    let file_content = std::fs::read_to_string(&completed_path)
+        .unwrap_or_else(|_| panic!("Error reading completed.json at {:?}", completed_path));
 
-    serde_json::from_str(&file_content).expect(&format!(
-        "Invalid JSON formatting in completed.json at {:?}",
-        completed_path
-    ))
+    serde_json::from_str(&file_content).unwrap_or_else(|_| {
+        panic!(
+            "Invalid JSON formatting in completed.json at {:?}",
+            completed_path
+        )
+    })
 }
 
 pub fn load_prd_from_file(prd_path: &str) -> Prd {
@@ -54,8 +54,8 @@ pub fn load_prd_from_file(prd_path: &str) -> Prd {
         panic!("PRD file not found at path {}", prd_path);
     }
 
-    let file_content =
-        std::fs::read_to_string(path).expect(&format!("Error reading PRD.json at {}", prd_path));
+    let file_content = std::fs::read_to_string(path)
+        .unwrap_or_else(|_| panic!("Error reading PRD.json at {}", prd_path));
     serde_json::from_str(&file_content)
-        .expect(&format!("Invalid JSON formatting in prd {}", prd_path))
+        .unwrap_or_else(|_| panic!("Invalid JSON formatting in prd {}", prd_path))
 }

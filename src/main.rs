@@ -1,126 +1,79 @@
-use clap::Parser;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use std::time::Duration;
+use clap::{Parser, Subcommand};
 
 mod app;
 mod claude;
+mod commands;
+mod plan;
 mod prd;
 mod prompt;
 mod tui;
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    #[arg(short, long)]
-    prd_path: Option<String>,
+#[command(name = "ralph")]
+#[command(version, about = "Ralph - AI-powered PRD execution and generation", long_about = None)]
+#[command(arg_required_else_help = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
 
-    #[arg(short = 'l', long)]
-    max_loops: Option<u64>,
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Execute tasks from an existing PRD file
+    Build {
+        /// Path to the PRD JSON file
+        #[arg(short, long, default_value = "plans/prd.json")]
+        prd_path: String,
+
+        /// Maximum number of loops to run
+        #[arg(short = 'l', long)]
+        max_loops: Option<u64>,
+    },
+
+    /// Generate a new PRD through interactive multi-turn conversation
+    Plan {
+        /// Output path for the generated PRD
+        #[arg(short, long, default_value = "plans/prd.json")]
+        output: String,
+
+        /// Resume an interrupted session
+        #[arg(short, long)]
+        resume: bool,
+
+        /// Force overwrite existing files
+        #[arg(short, long)]
+        force: bool,
+
+        /// Description of what to build (optional)
+        #[arg(short = 'd', long)]
+        description: Option<String>,
+    },
 }
 
 fn main() {
-    let args = Args::parse();
-    let prd_path = args.prd_path.as_deref().unwrap_or("plans/prd.json");
-    let max_loops = args.max_loops.unwrap_or(u64::MAX);
-    let exit_clause = "<promise>COMPLETE</promise>";
+    let cli = Cli::parse();
 
-    let prd = prd::load_prd_from_file(prd_path);
-    let completed = prd::load_completed_tasks_from_file(prd_path);
-    let remaining = prd.tasks.len();
-    let completed_count = completed.map_or(0, |t| t.len());
-
-    let mut terminal = tui::init_terminal();
-    let mut app = app::App::new(&prd.name, remaining, completed_count);
-
-    while !app.should_quit && app.loop_count < max_loops {
-        let prd = prd::load_prd_from_file(prd_path);
-        let completed = prd::load_completed_tasks_from_file(prd_path);
-        app.reload_progress(prd.tasks.len(), completed.map_or(0, |t| t.len()));
-
-        app.increment_loop();
-        app.set_status("Spawning Claude...");
-        terminal.draw(|f| app.draw(f)).expect("Failed to draw");
-
-        let prompt = prompt::make_prompt(prd_path);
-        let mut child = claude::launch_claude(&prompt);
-
-        app.set_status("Waiting for Claude... (q=quit, r=resume, Ctrl+C=kill)");
-
-        while child.try_wait().expect("Failed to check child").is_none() {
-            terminal.draw(|f| app.draw(f)).expect("Failed to draw");
-
-            if event::poll(Duration::from_millis(100)).expect("Poll failed") {
-                if let Event::Key(key) = event::read().expect("Failed to read event") {
-                    match (key.code, key.modifiers) {
-                        // Ctrl+C: kill Claude and quit immediately
-                        (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-                            child.kill().expect("Failed to kill Claude");
-                            app.should_quit = true;
-                            app.set_status("Interrupted by user");
-                            break;
-                        }
-                        // q/Q: quit after Claude finishes
-                        (KeyCode::Char('q') | KeyCode::Char('Q'), _) => {
-                            app.should_quit = true;
-                            app.set_status(
-                                "Will quit after Claude finishes this loop... (r=resume)",
-                            );
-                        }
-                        // r/R: resume (cancel quit)
-                        (KeyCode::Char('r') | KeyCode::Char('R'), _) => {
-                            app.should_quit = false;
-                            app.set_status("Resumed. Waiting for Claude...");
-                        }
-                        // Left/Right: navigate between iteration logs
-                        (KeyCode::Left, _) => {
-                            app.prev_log();
-                        }
-                        (KeyCode::Right, _) => {
-                            app.next_log();
-                        }
-                        // Up/Down: scroll within current log
-                        (KeyCode::Up, _) => {
-                            app.scroll_up(1);
-                        }
-                        (KeyCode::Down, _) => {
-                            app.scroll_down(1);
-                        }
-                        (KeyCode::PageUp, _) => {
-                            app.scroll_up(10);
-                        }
-                        (KeyCode::PageDown, _) => {
-                            app.scroll_down(10);
-                        }
-                        _ => {}
-                    }
-                }
+    match cli.command {
+        Some(Commands::Build {
+            prd_path,
+            max_loops,
+        }) => {
+            commands::build::run(&prd_path, max_loops.unwrap_or(u64::MAX));
+        }
+        Some(Commands::Plan {
+            output,
+            resume,
+            force,
+            description,
+        }) => {
+            if let Err(e) = commands::plan::run(&output, resume, force, description.as_deref()) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
             }
         }
-
-        let output = child.wait_with_output().expect("Failed to get output");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        app.push_log(stdout.to_string());
-
-        if let Some(latest) = app.latest_log() {
-            if latest
-                .to_ascii_lowercase()
-                .contains(&exit_clause.to_ascii_lowercase())
-            {
-                app.set_status("PRD Complete!");
-                app.should_quit = true;
-            }
+        None => {
+            // arg_required_else_help ensures this is unreachable in normal CLI usage
+            unreachable!("clap should show help when no subcommand is provided");
         }
-
-        terminal.draw(|f| app.draw(f)).expect("Failed to draw");
-    }
-
-    tui::restore_terminal();
-
-    println!("\n═══════════════════════════════════════════════════════════════");
-    println!("Ralph Session Complete");
-    println!("Loops: {}", app.loop_count);
-    println!("Final status: {}", app.status_message);
-    if let Some(latest) = app.latest_log() {
-        println!("\n─── Last Claude Output ───\n{}", latest);
     }
 }
