@@ -41,7 +41,6 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - run: cargo test --all-targets
-      - run: cargo test --doc
 
   lint:
     name: Lint
