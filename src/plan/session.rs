@@ -169,3 +169,239 @@ impl PlanSession {
         self.turn_count == 0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn new_session_has_uuid() {
+        let session = PlanSession::new("/tmp/prd.json");
+        assert!(!session.id.is_empty());
+        // UUID v4 format check (basic)
+        assert!(session.id.contains('-'));
+        assert_eq!(session.id.len(), 36);
+    }
+
+    #[test]
+    fn new_session_starts_fresh() {
+        let session = PlanSession::new("/tmp/prd.json");
+        assert!(session.is_fresh());
+        assert_eq!(session.turn_count, 0);
+        assert_eq!(session.last_phase, PlanPhase::Exploring);
+        assert!(session.answers.is_empty());
+    }
+
+    #[test]
+    fn new_session_stores_output_path() {
+        let session = PlanSession::new("/custom/path/prd.json");
+        assert_eq!(session.output_path, "/custom/path/prd.json");
+    }
+
+    #[test]
+    fn session_file_path_calculation() {
+        let path = PlanSession::session_file_path("/some/dir/prd.json");
+        assert_eq!(path.to_str().unwrap(), "/some/dir/.ralph-session.json");
+    }
+
+    #[test]
+    fn session_file_path_current_dir() {
+        let path = PlanSession::session_file_path("prd.json");
+        // When there's no parent dir, Path returns "" which becomes "." joined with filename
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            ".ralph-session.json"
+        );
+    }
+
+    #[test]
+    fn advance_increments_turn_and_updates_phase() {
+        let mut session = PlanSession::new("/tmp/prd.json");
+        assert_eq!(session.turn_count, 0);
+        assert_eq!(session.last_phase, PlanPhase::Exploring);
+
+        session.advance(PlanPhase::Asking);
+        assert_eq!(session.turn_count, 1);
+        assert_eq!(session.last_phase, PlanPhase::Asking);
+
+        session.advance(PlanPhase::Working);
+        assert_eq!(session.turn_count, 2);
+        assert_eq!(session.last_phase, PlanPhase::Working);
+    }
+
+    #[test]
+    fn add_answer_stores_answer() {
+        let mut session = PlanSession::new("/tmp/prd.json");
+        assert!(session.answers.is_empty());
+
+        session.add_answer(Answer {
+            question_id: "q1".to_string(),
+            value: "React".to_string(),
+        });
+        assert_eq!(session.answers.len(), 1);
+        assert_eq!(session.answers[0].question_id, "q1");
+
+        session.add_answer(Answer {
+            question_id: "q2".to_string(),
+            value: "PostgreSQL".to_string(),
+        });
+        assert_eq!(session.answers.len(), 2);
+    }
+
+    #[test]
+    fn merge_context_replaces_codebase_summary() {
+        let mut session = PlanSession::new("/tmp/prd.json");
+        assert!(session.context.codebase_summary.is_none());
+
+        let context = PhaseContext {
+            codebase_summary: Some(super::super::protocol::CodebaseSummary {
+                languages: Some(vec!["Rust".to_string()]),
+                frameworks: None,
+                structure: None,
+                key_files: None,
+            }),
+            ..Default::default()
+        };
+        session.merge_context(context);
+        assert!(session.context.codebase_summary.is_some());
+        assert_eq!(
+            session.context.codebase_summary.as_ref().unwrap().languages,
+            Some(vec!["Rust".to_string()])
+        );
+    }
+
+    #[test]
+    fn merge_context_appends_requirements() {
+        let mut session = PlanSession::new("/tmp/prd.json");
+
+        let context1 = PhaseContext {
+            requirements: Some(vec![super::super::protocol::Requirement {
+                category: "feature".to_string(),
+                description: "Add auth".to_string(),
+                priority: None,
+            }]),
+            ..Default::default()
+        };
+        session.merge_context(context1);
+        assert_eq!(session.context.requirements.as_ref().unwrap().len(), 1);
+
+        let context2 = PhaseContext {
+            requirements: Some(vec![super::super::protocol::Requirement {
+                category: "test".to_string(),
+                description: "Add tests".to_string(),
+                priority: None,
+            }]),
+            ..Default::default()
+        };
+        session.merge_context(context2);
+        assert_eq!(session.context.requirements.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn save_and_load_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let prd_path = temp_dir.path().join("prd.json");
+        let prd_path_str = prd_path.to_str().unwrap();
+
+        let mut session = PlanSession::new(prd_path_str);
+        session.advance(PlanPhase::Asking);
+        session.add_answer(Answer {
+            question_id: "q1".to_string(),
+            value: "test value".to_string(),
+        });
+
+        session.save().unwrap();
+
+        // Load it back
+        let loaded = PlanSession::load_or_create(prd_path_str, true, false).unwrap();
+        assert_eq!(loaded.id, session.id);
+        assert_eq!(loaded.turn_count, 1);
+        assert_eq!(loaded.last_phase, PlanPhase::Asking);
+        assert_eq!(loaded.answers.len(), 1);
+    }
+
+    #[test]
+    fn load_or_create_without_resume_or_force_errors() {
+        let temp_dir = TempDir::new().unwrap();
+        let prd_path = temp_dir.path().join("prd.json");
+        let prd_path_str = prd_path.to_str().unwrap();
+
+        // Create and save a session
+        let session = PlanSession::new(prd_path_str);
+        session.save().unwrap();
+
+        // Try to load without resume or force
+        let result = PlanSession::load_or_create(prd_path_str, false, false);
+        assert!(matches!(result, Err(SessionError::SessionExists)));
+    }
+
+    #[test]
+    fn load_or_create_with_force_creates_new() {
+        let temp_dir = TempDir::new().unwrap();
+        let prd_path = temp_dir.path().join("prd.json");
+        let prd_path_str = prd_path.to_str().unwrap();
+
+        // Create and save a session with some turns
+        let mut session = PlanSession::new(prd_path_str);
+        session.advance(PlanPhase::Asking);
+        session.advance(PlanPhase::Working);
+        let old_id = session.id.clone();
+        session.save().unwrap();
+
+        // Force create new session
+        let new_session = PlanSession::load_or_create(prd_path_str, false, true).unwrap();
+        assert_ne!(new_session.id, old_id);
+        assert!(new_session.is_fresh());
+        assert_eq!(new_session.turn_count, 0);
+    }
+
+    #[test]
+    fn load_or_create_without_existing_creates_new() {
+        let temp_dir = TempDir::new().unwrap();
+        let prd_path = temp_dir.path().join("prd.json");
+        let prd_path_str = prd_path.to_str().unwrap();
+
+        // No existing session file
+        let session = PlanSession::load_or_create(prd_path_str, false, false).unwrap();
+        assert!(session.is_fresh());
+    }
+
+    #[test]
+    fn cleanup_removes_session_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let prd_path = temp_dir.path().join("prd.json");
+        let prd_path_str = prd_path.to_str().unwrap();
+        let session_path = PlanSession::session_file_path(prd_path_str);
+
+        let session = PlanSession::new(prd_path_str);
+        session.save().unwrap();
+        assert!(session_path.exists());
+
+        session.cleanup().unwrap();
+        assert!(!session_path.exists());
+    }
+
+    #[test]
+    fn cleanup_handles_missing_file() {
+        let session = PlanSession::new("/tmp/nonexistent/prd.json");
+        // Should not error even if file doesn't exist
+        let result = session.cleanup();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn is_fresh_returns_false_after_advance() {
+        let mut session = PlanSession::new("/tmp/prd.json");
+        assert!(session.is_fresh());
+
+        session.advance(PlanPhase::Exploring);
+        assert!(!session.is_fresh());
+    }
+
+    #[test]
+    fn timestamps_are_set() {
+        let session = PlanSession::new("/tmp/prd.json");
+        assert!(session.created_at <= session.updated_at);
+    }
+}

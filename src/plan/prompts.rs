@@ -104,3 +104,74 @@ pub fn build_resume_prompt(turn_count: u32, last_phase: &str) -> String {
 Continue from where we left off. Respond with your current phase and any questions or the final PRD."#
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_prompt_contains_phase_keywords() {
+        assert!(SYSTEM_PROMPT.contains("exploring"));
+        assert!(SYSTEM_PROMPT.contains("asking"));
+        assert!(SYSTEM_PROMPT.contains("working"));
+        assert!(SYSTEM_PROMPT.contains("complete"));
+    }
+
+    #[test]
+    fn system_prompt_contains_json_format() {
+        assert!(SYSTEM_PROMPT.contains("JSON"));
+        assert!(SYSTEM_PROMPT.contains("phase"));
+    }
+
+    #[test]
+    fn build_initial_prompt_includes_user_request() {
+        let request = "Add user authentication";
+        let prompt = build_initial_prompt(request);
+        assert!(prompt.contains(request));
+        assert!(prompt.contains(SYSTEM_PROMPT));
+        assert!(prompt.contains("User Request"));
+    }
+
+    #[test]
+    fn build_continuation_prompt_empty_answers() {
+        let prompt = build_continuation_prompt(&[]);
+        assert_eq!(prompt, "Continue with the PRD generation.");
+    }
+
+    #[test]
+    fn build_continuation_prompt_with_answers() {
+        let answers = vec![
+            Answer {
+                question_id: "q1".to_string(),
+                value: "React".to_string(),
+            },
+            Answer {
+                question_id: "q2".to_string(),
+                value: "PostgreSQL".to_string(),
+            },
+        ];
+        let prompt = build_continuation_prompt(&answers);
+        assert!(prompt.contains("q1: React"));
+        assert!(prompt.contains("q2: PostgreSQL"));
+        assert!(prompt.contains("User provided the following answers"));
+        assert!(prompt.contains("Continue with the PRD generation based on these answers"));
+    }
+
+    #[test]
+    fn build_resume_prompt_includes_turn_count() {
+        let prompt = build_resume_prompt(5, "asking");
+        assert!(prompt.contains("Turns completed: 5"));
+        assert!(prompt.contains("Last phase: asking"));
+        assert!(prompt.contains("resumed session"));
+    }
+
+    #[test]
+    fn build_resume_prompt_different_phases() {
+        let prompt = build_resume_prompt(0, "exploring");
+        assert!(prompt.contains("Last phase: exploring"));
+
+        let prompt = build_resume_prompt(10, "working");
+        assert!(prompt.contains("Turns completed: 10"));
+        assert!(prompt.contains("Last phase: working"));
+    }
+}
