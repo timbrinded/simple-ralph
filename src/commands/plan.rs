@@ -4,7 +4,9 @@ use std::path::Path;
 use std::time::Duration;
 use thiserror::Error;
 
-use crate::claude::{ClaudeOptions, launch_claude_with_options};
+use crate::claude::{ClaudeOptions, launch_claude_with_options, normalize_json_with_haiku};
+use serde::Deserialize;
+
 use crate::plan::{
     app::{InputMode, PlanApp},
     phases::PlanPhase,
@@ -13,6 +15,13 @@ use crate::plan::{
     session::{PlanSession, SessionError},
 };
 use crate::tui;
+
+/// Wrapper for Claude's JSON output format when using --output-format json
+/// The structured_output field contains the response matching the JSON schema
+#[derive(Deserialize)]
+struct ClaudeJsonOutput {
+    structured_output: Option<PlanResponse>,
+}
 
 #[derive(Error, Debug)]
 pub enum PlanError {
@@ -107,6 +116,7 @@ pub fn run(
             continue_session: false, // --session-id handles resumption
             json_schema: Some(PLAN_RESPONSE_SCHEMA),
             bypass_permissions: true,
+            output_format: Some("json"), // Ensures clean JSON envelope with structured_output
         };
 
         let mut child = launch_claude_with_options(&opts);
@@ -151,14 +161,54 @@ pub fn run(
         // Log the raw output
         app.push_log(stdout.to_string());
 
-        // Parse JSON response
-        let response: PlanResponse = match serde_json::from_str(&stdout) {
-            Ok(r) => r,
-            Err(e) => {
+        // Parse JSON response from Claude's output envelope
+        // With --output-format json, the response is wrapped: { "structured_output": {...}, ... }
+        //
+        // Tier 1: Try strict parsing of the wrapper
+        // Tier 2: If that fails but looks like JSON, use Haiku to normalize
+        // Tier 3: If both fail, return a clear error
+        let response: PlanResponse = match serde_json::from_str::<ClaudeJsonOutput>(&stdout) {
+            Ok(wrapper) => match wrapper.structured_output {
+                Some(r) => r,
+                None => {
+                    // No structured_output - try Haiku fallback on the raw stdout
+                    app.status = "No structured_output, trying Haiku normalization...".to_string();
+                    terminal.draw(|f| app.draw(f)).expect("Failed to draw");
+                    app.push_log("Tier 1 failed: No structured_output in wrapper. Trying Haiku...".to_string());
+
+                    match normalize_json_with_haiku(&stdout, PLAN_RESPONSE_SCHEMA) {
+                        Ok(normalized) => match serde_json::from_str(&normalized) {
+                            Ok(r) => {
+                                app.push_log("Haiku normalization succeeded!".to_string());
+                                r
+                            }
+                            Err(e) => {
+                                let error_detail = format!(
+                                    "Haiku returned invalid JSON: {}\n\nNormalized output:\n{}",
+                                    e, normalized
+                                );
+                                app.push_log(format!("ERROR: {}", error_detail));
+                                tui::restore_terminal();
+                                return Err(PlanError::InvalidOutput(error_detail));
+                            }
+                        },
+                        Err(e) => {
+                            let error_detail = format!(
+                                "Both strict parsing and Haiku normalization failed:\n{}",
+                                e
+                            );
+                            app.push_log(format!("ERROR: {}", error_detail));
+                            tui::restore_terminal();
+                            return Err(PlanError::InvalidOutput(error_detail));
+                        }
+                    }
+                }
+            },
+            Err(parse_err) => {
                 // Check if it looks like JSON at all
                 let trimmed = stdout.trim();
                 if !trimmed.starts_with('{') {
-                    // Not JSON - this is an InvalidOutput error
+                    // Not JSON at all - this is an unrecoverable error
                     app.status = "Claude returned non-JSON output".to_string();
                     let error_detail = if stderr.is_empty() {
                         stdout.to_string()
@@ -173,12 +223,40 @@ pub fn run(
                     return Err(PlanError::InvalidOutput(error_detail));
                 }
 
-                // Malformed JSON - log and try to continue
-                app.status = format!("Failed to parse Claude response: {}", e);
-                app.push_log(format!("Parse error: {}\n\nRaw output:\n{}", e, stdout));
-                session.advance(PlanPhase::Working);
-                session.save()?;
-                continue;
+                // Looks like JSON but malformed - try Haiku normalization
+                app.status = "Normalizing response with Haiku...".to_string();
+                terminal.draw(|f| app.draw(f)).expect("Failed to draw");
+                app.push_log(format!(
+                    "Tier 1 failed: Parse error: {}\nTrying Haiku normalization...",
+                    parse_err
+                ));
+
+                match normalize_json_with_haiku(&stdout, PLAN_RESPONSE_SCHEMA) {
+                    Ok(normalized) => match serde_json::from_str(&normalized) {
+                        Ok(r) => {
+                            app.push_log("Haiku normalization succeeded!".to_string());
+                            r
+                        }
+                        Err(e) => {
+                            let error_detail = format!(
+                                "Haiku returned invalid JSON: {}\n\nNormalized output:\n{}",
+                                e, normalized
+                            );
+                            app.push_log(format!("ERROR: {}", error_detail));
+                            tui::restore_terminal();
+                            return Err(PlanError::InvalidOutput(error_detail));
+                        }
+                    },
+                    Err(e) => {
+                        let error_detail = format!(
+                            "Both strict parsing and Haiku normalization failed.\n\nOriginal error: {}\n\nHaiku error: {}",
+                            parse_err, e
+                        );
+                        app.push_log(format!("ERROR: {}", error_detail));
+                        tui::restore_terminal();
+                        return Err(PlanError::InvalidOutput(error_detail));
+                    }
+                }
             }
         };
 
@@ -402,13 +480,16 @@ fn collect_answers(
                         (KeyCode::BackTab, _) => {
                             app.prev_question();
                         }
-                        // Enter: submit answer for current question, move to next
+                        // Enter: submit answer for current question, move to next or auto-submit
                         (KeyCode::Enter, _) => {
                             app.submit_answer();
                             if app.current_question + 1 < app.questions.len() {
                                 app.next_question();
+                            } else if app.all_answered() {
+                                // On last question and all answered - auto-submit
+                                app.should_submit = true;
+                                return Ok(());
                             }
-                            // Don't auto-submit when on last question - wait for Ctrl+Enter
                         }
                         _ => {}
                     }

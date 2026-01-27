@@ -189,7 +189,7 @@ impl PlanApp {
         }
     }
 
-    /// Submit answer for current question
+    /// Submit answer for current question (replaces existing answer if any)
     pub fn submit_answer(&mut self) {
         if let Some(q) = self.questions.get(self.current_question).cloned() {
             let value = if self.input_mode == InputMode::Editing || q.options.is_none() {
@@ -204,10 +204,15 @@ impl PlanApp {
             };
 
             if !value.is_empty() {
-                self.answers.push(Answer {
-                    question_id: q.id.clone(),
-                    value,
-                });
+                // Replace existing answer for this question (don't add duplicates)
+                if let Some(existing) = self.answers.iter_mut().find(|a| a.question_id == q.id) {
+                    existing.value = value;
+                } else {
+                    self.answers.push(Answer {
+                        question_id: q.id.clone(),
+                        value,
+                    });
+                }
             }
         }
     }
@@ -257,12 +262,21 @@ impl PlanApp {
 
     /// Check if all questions have been answered
     pub fn all_answered(&self) -> bool {
-        !self.questions.is_empty() && self.answers.len() >= self.questions.len()
+        if self.questions.is_empty() {
+            return false;
+        }
+        // Check that every question has an answer
+        self.questions
+            .iter()
+            .all(|q| self.answers.iter().any(|a| a.question_id == q.id))
     }
 
-    /// Get count of answered questions
+    /// Get count of answered questions (unique question IDs)
     pub fn answered_count(&self) -> usize {
-        self.answers.len()
+        self.questions
+            .iter()
+            .filter(|q| self.answers.iter().any(|a| a.question_id == q.id))
+            .count()
     }
 
     /// Reset submit flag
@@ -395,15 +409,46 @@ impl PlanApp {
             return;
         }
 
-        let [question_area, options_area, input_area] = Layout::vertical([
-            Constraint::Length(6),
-            Constraint::Fill(1),
-            Constraint::Length(3),
-        ])
-        .areas(area);
-
         // Render current question
         if let Some(q) = self.questions.get(self.current_question) {
+            let has_options = q.options.is_some();
+            let allows_freeform = q.allow_freeform || q.options.is_none();
+
+            // Dynamic layout: collapse empty space, give freeform prominence when needed
+            let (question_area, options_area, input_area) = if has_options && allows_freeform {
+                // Both options AND freeform: compact layout with visible input
+                let option_count = q.options.as_ref().map(|o| o.len()).unwrap_or(0);
+                let options_height = (option_count as u16 + 3).min(12); // +3 for borders/title, max 12
+                let [q_area, o_area, i_area, _spacer] = Layout::vertical([
+                    Constraint::Length(6),              // Question
+                    Constraint::Length(options_height), // Options (sized to content)
+                    Constraint::Length(5),              // Freeform input (more prominent)
+                    Constraint::Fill(1),                // Absorb remaining space
+                ])
+                .areas(area);
+                (q_area, o_area, i_area)
+            } else if has_options {
+                // Only options, no freeform
+                let [q_area, o_area, i_area] = Layout::vertical([
+                    Constraint::Length(6),
+                    Constraint::Fill(1),
+                    Constraint::Length(0), // No input area
+                ])
+                .areas(area);
+                (q_area, o_area, i_area)
+            } else {
+                // Only freeform, no options - give input more space
+                let [q_area, o_area, i_area, _spacer] = Layout::vertical([
+                    Constraint::Length(6),
+                    Constraint::Length(7), // Hint area
+                    Constraint::Length(5), // Input area
+                    Constraint::Fill(1),   // Absorb remaining
+                ])
+                .areas(area);
+                (q_area, o_area, i_area)
+            };
+
+            // === Question Block ===
             let question_lines = vec![
                 Line::from(vec![
                     Span::styled(
@@ -445,7 +490,7 @@ impl PlanApp {
 
             frame.render_widget(question_widget, question_area);
 
-            // Render options if present
+            // === Options Block ===
             if let Some(ref opts) = q.options {
                 let items: Vec<ListItem> = opts
                     .iter()
@@ -480,35 +525,111 @@ impl PlanApp {
                     options_area,
                     &mut self.option_list_state,
                 );
+            } else {
+                // No predefined options - show prominent hint for freeform input
+                let hint_lines = vec![
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled("  ╭", Style::default().fg(Color::Yellow)),
+                        Span::styled(
+                            "───────────────────────────────────",
+                            Style::default().fg(Color::Yellow),
+                        ),
+                        Span::styled("╮", Style::default().fg(Color::Yellow)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("  │  ", Style::default().fg(Color::Yellow)),
+                        Span::styled("PRESS ", Style::default().fg(Color::White)),
+                        Span::styled(
+                            " i ",
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" TO TYPE YOUR RESPONSE", Style::default().fg(Color::White)),
+                        Span::styled("   │", Style::default().fg(Color::Yellow)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("  ╰", Style::default().fg(Color::Yellow)),
+                        Span::styled(
+                            "───────────────────────────────────",
+                            Style::default().fg(Color::Yellow),
+                        ),
+                        Span::styled("╯", Style::default().fg(Color::Yellow)),
+                    ]),
+                ];
+
+                let hint_widget =
+                    Paragraph::new(hint_lines).alignment(ratatui::layout::Alignment::Center);
+
+                frame.render_widget(hint_widget, options_area);
             }
 
-            // Render freeform input if allowed
-            if q.allow_freeform || q.options.is_none() {
-                let input_style = if self.input_mode == InputMode::Editing {
-                    Style::default().fg(Color::Yellow)
+            // === Freeform Input Block ===
+            if allows_freeform {
+                let is_editing = self.input_mode == InputMode::Editing;
+
+                // Make it MORE prominent when freeform is available
+                let (border_style, title_style, bg_hint) = if is_editing {
+                    (
+                        Style::default().fg(Color::Yellow),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                        "",
+                    )
+                } else if has_options {
+                    // Options exist but freeform allowed - highlight the input
+                    (
+                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(Color::Cyan),
+                        " ← press 'i' ",
+                    )
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    // No options - freeform is the only way
+                    (
+                        Style::default().fg(Color::Yellow),
+                        Style::default().fg(Color::Yellow),
+                        "",
+                    )
+                };
+
+                let title = if is_editing {
+                    " ✎ TYPING... (Esc to finish, Enter to submit) ".to_string()
+                } else if has_options {
+                    format!(" Or type custom answer{} ", bg_hint)
+                } else {
+                    format!(" Type your answer{} ", bg_hint)
                 };
 
                 let input_block = Block::default()
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Plain)
-                    .border_style(input_style)
-                    .title(if self.input_mode == InputMode::Editing {
-                        " Type your answer (Esc to finish) "
+                    .border_type(if is_editing {
+                        BorderType::Double
                     } else {
-                        " Press 'i' to type custom answer "
+                        BorderType::Plain
                     })
+                    .border_style(border_style)
+                    .title(Span::styled(title, title_style))
                     .padding(Padding::horizontal(1));
 
-                let input_widget = Paragraph::new(self.freeform_input.as_str())
-                    .block(input_block)
-                    .style(Style::default().fg(Color::White));
+                // Show placeholder when empty and not editing
+                let display_text = if self.freeform_input.is_empty() && !is_editing {
+                    Span::styled(
+                        "Press 'i' to start typing...",
+                        Style::default().fg(Color::DarkGray),
+                    )
+                } else {
+                    Span::styled(&self.freeform_input, Style::default().fg(Color::White))
+                };
+
+                let input_widget = Paragraph::new(Line::from(display_text)).block(input_block);
 
                 frame.render_widget(input_widget, input_area);
 
                 // Show cursor in editing mode
-                if self.input_mode == InputMode::Editing {
+                if is_editing {
                     frame.set_cursor_position((
                         input_area.x + self.cursor_position as u16 + 2,
                         input_area.y + 1,
@@ -1124,6 +1245,10 @@ mod tests {
     #[test]
     fn answered_count() {
         let mut app = PlanApp::new();
+        app.set_questions(vec![
+            create_test_question("q1", true),
+            create_test_question("q2", true),
+        ]);
         assert_eq!(app.answered_count(), 0);
 
         app.answers.push(Answer {
@@ -1131,6 +1256,19 @@ mod tests {
             value: "A".to_string(),
         });
         assert_eq!(app.answered_count(), 1);
+
+        app.answers.push(Answer {
+            question_id: "q2".to_string(),
+            value: "B".to_string(),
+        });
+        assert_eq!(app.answered_count(), 2);
+
+        // Adding duplicate answer for q1 should NOT increase count
+        app.answers.push(Answer {
+            question_id: "q1".to_string(),
+            value: "C".to_string(),
+        });
+        assert_eq!(app.answered_count(), 2); // Still 2, not 3
     }
 
     #[test]
