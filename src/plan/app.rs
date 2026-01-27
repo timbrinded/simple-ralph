@@ -771,3 +771,419 @@ impl Default for PlanApp {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::protocol::QuestionOption;
+
+    fn create_test_question(id: &str, with_options: bool) -> Question {
+        Question {
+            id: id.to_string(),
+            category: "scope".to_string(),
+            text: format!("Question {id}?"),
+            context: Some("Context".to_string()),
+            options: if with_options {
+                Some(vec![
+                    QuestionOption {
+                        key: "A".to_string(),
+                        label: "Option A".to_string(),
+                        description: None,
+                    },
+                    QuestionOption {
+                        key: "B".to_string(),
+                        label: "Option B".to_string(),
+                        description: Some("With description".to_string()),
+                    },
+                ])
+            } else {
+                None
+            },
+            allow_freeform: true,
+        }
+    }
+
+    #[test]
+    fn new_app_initialization() {
+        let app = PlanApp::new();
+        assert_eq!(app.phase, PlanPhase::Exploring);
+        assert_eq!(app.status, "Starting...");
+        assert!(!app.awaiting_idea);
+        assert!(app.idea_input.is_empty());
+        assert!(app.questions.is_empty());
+        assert_eq!(app.current_question, 0);
+        assert!(app.answers.is_empty());
+        assert_eq!(app.turn_count, 0);
+        assert!(!app.should_quit);
+        assert!(!app.should_submit);
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn default_same_as_new() {
+        let default_app = PlanApp::default();
+        let new_app = PlanApp::new();
+        assert_eq!(default_app.phase, new_app.phase);
+        assert_eq!(default_app.status, new_app.status);
+        assert_eq!(default_app.turn_count, new_app.turn_count);
+    }
+
+    #[test]
+    fn update_from_response_changes_phase_and_status() {
+        let mut app = PlanApp::new();
+        let response = PlanResponse {
+            phase: PlanPhase::Asking,
+            status: Some("Need input".to_string()),
+            questions: None,
+            context: None,
+            prd: None,
+        };
+
+        app.update_from_response(&response);
+        assert_eq!(app.phase, PlanPhase::Asking);
+        assert_eq!(app.status, "Need input");
+        assert_eq!(app.turn_count, 1);
+    }
+
+    #[test]
+    fn update_from_response_sets_questions() {
+        let mut app = PlanApp::new();
+        let response = PlanResponse {
+            phase: PlanPhase::Asking,
+            status: None,
+            questions: Some(vec![
+                create_test_question("q1", true),
+                create_test_question("q2", false),
+            ]),
+            context: None,
+            prd: None,
+        };
+
+        app.update_from_response(&response);
+        assert_eq!(app.questions.len(), 2);
+        assert_eq!(app.current_question, 0);
+        assert!(app.freeform_input.is_empty());
+    }
+
+    #[test]
+    fn next_question_navigation() {
+        let mut app = PlanApp::new();
+        app.set_questions(vec![
+            create_test_question("q1", true),
+            create_test_question("q2", true),
+            create_test_question("q3", true),
+        ]);
+
+        assert_eq!(app.current_question, 0);
+        app.next_question();
+        assert_eq!(app.current_question, 1);
+        app.next_question();
+        assert_eq!(app.current_question, 2);
+        // Can't go past last
+        app.next_question();
+        assert_eq!(app.current_question, 2);
+    }
+
+    #[test]
+    fn prev_question_navigation() {
+        let mut app = PlanApp::new();
+        app.set_questions(vec![
+            create_test_question("q1", true),
+            create_test_question("q2", true),
+        ]);
+        app.current_question = 1;
+
+        app.prev_question();
+        assert_eq!(app.current_question, 0);
+        // Can't go below 0
+        app.prev_question();
+        assert_eq!(app.current_question, 0);
+    }
+
+    #[test]
+    fn question_navigation_resets_state() {
+        let mut app = PlanApp::new();
+        app.set_questions(vec![
+            create_test_question("q1", true),
+            create_test_question("q2", true),
+        ]);
+
+        app.freeform_input = "some text".to_string();
+        app.cursor_position = 5;
+        app.option_list_state.select(Some(1));
+
+        app.next_question();
+        assert!(app.freeform_input.is_empty());
+        assert_eq!(app.cursor_position, 0);
+        assert_eq!(app.option_list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn next_option_cycles() {
+        let mut app = PlanApp::new();
+        app.set_questions(vec![create_test_question("q1", true)]);
+        app.option_list_state.select(Some(0));
+
+        app.next_option();
+        assert_eq!(app.option_list_state.selected(), Some(1));
+
+        app.next_option();
+        assert_eq!(app.option_list_state.selected(), Some(0)); // Wraps around
+    }
+
+    #[test]
+    fn prev_option_cycles() {
+        let mut app = PlanApp::new();
+        app.set_questions(vec![create_test_question("q1", true)]);
+        app.option_list_state.select(Some(0));
+
+        app.prev_option();
+        assert_eq!(app.option_list_state.selected(), Some(1)); // Wraps to end
+
+        app.prev_option();
+        assert_eq!(app.option_list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn submit_answer_from_option() {
+        let mut app = PlanApp::new();
+        app.set_questions(vec![create_test_question("q1", true)]);
+        app.option_list_state.select(Some(1)); // Select option B
+        app.input_mode = InputMode::Normal;
+
+        app.submit_answer();
+        assert_eq!(app.answers.len(), 1);
+        assert_eq!(app.answers[0].question_id, "q1");
+        assert_eq!(app.answers[0].value, "B");
+    }
+
+    #[test]
+    fn submit_answer_from_freeform() {
+        let mut app = PlanApp::new();
+        app.set_questions(vec![create_test_question("q1", true)]);
+        app.input_mode = InputMode::Editing;
+        app.freeform_input = "Custom answer".to_string();
+
+        app.submit_answer();
+        assert_eq!(app.answers.len(), 1);
+        assert_eq!(app.answers[0].value, "Custom answer");
+    }
+
+    #[test]
+    fn submit_answer_no_options_uses_freeform() {
+        let mut app = PlanApp::new();
+        app.set_questions(vec![create_test_question("q1", false)]); // No options
+        app.input_mode = InputMode::Normal;
+        app.freeform_input = "Freeform only".to_string();
+
+        app.submit_answer();
+        assert_eq!(app.answers.len(), 1);
+        assert_eq!(app.answers[0].value, "Freeform only");
+    }
+
+    #[test]
+    fn submit_empty_answer_not_added() {
+        let mut app = PlanApp::new();
+        app.set_questions(vec![create_test_question("q1", false)]);
+        app.freeform_input = String::new();
+
+        app.submit_answer();
+        assert!(app.answers.is_empty());
+    }
+
+    #[test]
+    fn enter_exit_editing_mode() {
+        let mut app = PlanApp::new();
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        app.enter_editing();
+        assert_eq!(app.input_mode, InputMode::Editing);
+
+        app.exit_editing();
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn enter_char_inserts_at_cursor() {
+        let mut app = PlanApp::new();
+        app.enter_editing();
+
+        app.enter_char('H');
+        app.enter_char('i');
+        assert_eq!(app.freeform_input, "Hi");
+        assert_eq!(app.cursor_position, 2);
+    }
+
+    #[test]
+    fn enter_char_middle_of_string() {
+        let mut app = PlanApp::new();
+        app.freeform_input = "Hllo".to_string();
+        app.cursor_position = 1;
+
+        app.enter_char('e');
+        assert_eq!(app.freeform_input, "Hello");
+        assert_eq!(app.cursor_position, 2);
+    }
+
+    #[test]
+    fn delete_char_removes_before_cursor() {
+        let mut app = PlanApp::new();
+        app.freeform_input = "Hello".to_string();
+        app.cursor_position = 5;
+
+        app.delete_char();
+        assert_eq!(app.freeform_input, "Hell");
+        assert_eq!(app.cursor_position, 4);
+    }
+
+    #[test]
+    fn delete_char_at_start_does_nothing() {
+        let mut app = PlanApp::new();
+        app.freeform_input = "Hello".to_string();
+        app.cursor_position = 0;
+
+        app.delete_char();
+        assert_eq!(app.freeform_input, "Hello");
+        assert_eq!(app.cursor_position, 0);
+    }
+
+    #[test]
+    fn move_cursor_left() {
+        let mut app = PlanApp::new();
+        app.freeform_input = "Hello".to_string();
+        app.cursor_position = 3;
+
+        app.move_cursor_left();
+        assert_eq!(app.cursor_position, 2);
+
+        app.cursor_position = 0;
+        app.move_cursor_left();
+        assert_eq!(app.cursor_position, 0); // Can't go below 0
+    }
+
+    #[test]
+    fn move_cursor_right() {
+        let mut app = PlanApp::new();
+        app.freeform_input = "Hello".to_string();
+        app.cursor_position = 3;
+
+        app.move_cursor_right();
+        assert_eq!(app.cursor_position, 4);
+
+        app.cursor_position = 5;
+        app.move_cursor_right();
+        assert_eq!(app.cursor_position, 5); // Can't go past end
+    }
+
+    #[test]
+    fn take_answers_consumes_and_clears() {
+        let mut app = PlanApp::new();
+        app.answers.push(Answer {
+            question_id: "q1".to_string(),
+            value: "A".to_string(),
+        });
+        app.answers.push(Answer {
+            question_id: "q2".to_string(),
+            value: "B".to_string(),
+        });
+
+        let taken = app.take_answers();
+        assert_eq!(taken.len(), 2);
+        assert!(app.answers.is_empty());
+    }
+
+    #[test]
+    fn all_answered_check() {
+        let mut app = PlanApp::new();
+        app.set_questions(vec![
+            create_test_question("q1", true),
+            create_test_question("q2", true),
+        ]);
+
+        assert!(!app.all_answered());
+
+        app.answers.push(Answer {
+            question_id: "q1".to_string(),
+            value: "A".to_string(),
+        });
+        assert!(!app.all_answered());
+
+        app.answers.push(Answer {
+            question_id: "q2".to_string(),
+            value: "B".to_string(),
+        });
+        assert!(app.all_answered());
+    }
+
+    #[test]
+    fn all_answered_false_when_no_questions() {
+        let app = PlanApp::new();
+        assert!(!app.all_answered()); // No questions means not all answered
+    }
+
+    #[test]
+    fn answered_count() {
+        let mut app = PlanApp::new();
+        assert_eq!(app.answered_count(), 0);
+
+        app.answers.push(Answer {
+            question_id: "q1".to_string(),
+            value: "A".to_string(),
+        });
+        assert_eq!(app.answered_count(), 1);
+    }
+
+    #[test]
+    fn current_question_returns_correct_question() {
+        let mut app = PlanApp::new();
+        app.set_questions(vec![
+            create_test_question("q1", true),
+            create_test_question("q2", true),
+        ]);
+
+        assert_eq!(app.current_question().unwrap().id, "q1");
+        app.current_question = 1;
+        assert_eq!(app.current_question().unwrap().id, "q2");
+    }
+
+    #[test]
+    fn current_question_none_when_empty() {
+        let app = PlanApp::new();
+        assert!(app.current_question().is_none());
+    }
+
+    #[test]
+    fn push_log_and_scroll() {
+        let mut app = PlanApp::new();
+        app.push_log("Log 1".to_string());
+        assert_eq!(app.response_logs.len(), 1);
+        assert_eq!(app.current_log_index, 0);
+
+        app.push_log("Log 2".to_string());
+        assert_eq!(app.current_log_index, 1);
+        assert_eq!(app.log_scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_operations() {
+        let mut app = PlanApp::new();
+        app.push_log("Line 1\nLine 2\nLine 3\nLine 4".to_string());
+
+        app.scroll_down(2);
+        assert_eq!(app.log_scroll_offset, 2);
+
+        app.scroll_up(1);
+        assert_eq!(app.log_scroll_offset, 1);
+
+        app.scroll_up(10); // Saturates at 0
+        assert_eq!(app.log_scroll_offset, 0);
+    }
+
+    #[test]
+    fn reset_submit() {
+        let mut app = PlanApp::new();
+        app.should_submit = true;
+        app.reset_submit();
+        assert!(!app.should_submit);
+    }
+}

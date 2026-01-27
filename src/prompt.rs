@@ -23,3 +23,39 @@ const MASTER_PROMPT: &str = r#"
 const _REGRETS_PROMPT: &str = r#"
 hello
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn make_prompt_includes_prd_path() {
+        let prompt = make_prompt("/path/to/prd.json");
+        assert!(prompt.starts_with("@/path/to/prd.json"));
+    }
+
+    #[test]
+    fn make_prompt_includes_progress_reference() {
+        let prompt = make_prompt("prd.json");
+        assert!(prompt.contains("@progress.txt"));
+    }
+
+    #[test]
+    fn make_prompt_includes_master_instructions() {
+        let prompt = make_prompt("prd.json");
+        assert!(prompt.contains("Find the highest priority feature"));
+        assert!(prompt.contains("quality gates"));
+        assert!(prompt.contains("git commit"));
+    }
+
+    #[test]
+    fn make_prompt_includes_completed_json_reference() {
+        let prompt = make_prompt("prd.json");
+        assert!(prompt.contains("completed.json"));
+    }
+
+    #[test]
+    fn master_prompt_contains_complete_marker() {
+        assert!(MASTER_PROMPT.contains("<promise>COMPLETE</promise>"));
+    }
+}

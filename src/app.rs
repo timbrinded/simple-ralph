@@ -358,3 +358,203 @@ impl App {
         self.iteration_logs.last().map(|s| s.as_str())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_app_initialization() {
+        let app = App::new("Test PRD", 5, 3);
+        assert_eq!(app.prd_name, "Test PRD");
+        assert_eq!(app.remaining_tasks, 5);
+        assert_eq!(app.completed_tasks, 3);
+        assert_eq!(app.loop_count, 0);
+        assert!(!app.should_quit);
+        assert_eq!(app.status_message, "Initialising...");
+        assert!(app.iteration_logs.is_empty());
+        assert_eq!(app.current_log_index, 0);
+        assert_eq!(app.log_scroll_offset, 0);
+    }
+
+    #[test]
+    fn increment_loop() {
+        let mut app = App::new("Test", 1, 0);
+        assert_eq!(app.loop_count, 0);
+
+        app.increment_loop();
+        assert_eq!(app.loop_count, 1);
+
+        app.increment_loop();
+        app.increment_loop();
+        assert_eq!(app.loop_count, 3);
+    }
+
+    #[test]
+    fn set_status() {
+        let mut app = App::new("Test", 1, 0);
+        assert_eq!(app.status_message, "Initialising...");
+
+        app.set_status("Running task...");
+        assert_eq!(app.status_message, "Running task...");
+
+        app.set_status("Complete!");
+        assert_eq!(app.status_message, "Complete!");
+    }
+
+    #[test]
+    fn reload_progress() {
+        let mut app = App::new("Test", 5, 2);
+        assert_eq!(app.remaining_tasks, 5);
+        assert_eq!(app.completed_tasks, 2);
+
+        app.reload_progress(3, 4);
+        assert_eq!(app.remaining_tasks, 3);
+        assert_eq!(app.completed_tasks, 4);
+    }
+
+    #[test]
+    fn push_log_adds_and_switches() {
+        let mut app = App::new("Test", 1, 0);
+        assert!(app.iteration_logs.is_empty());
+        assert_eq!(app.current_log_index, 0);
+
+        app.push_log("First log".to_string());
+        assert_eq!(app.iteration_logs.len(), 1);
+        assert_eq!(app.current_log_index, 0);
+
+        app.push_log("Second log".to_string());
+        assert_eq!(app.iteration_logs.len(), 2);
+        assert_eq!(app.current_log_index, 1); // Switches to newest
+
+        app.push_log("Third log".to_string());
+        assert_eq!(app.iteration_logs.len(), 3);
+        assert_eq!(app.current_log_index, 2);
+    }
+
+    #[test]
+    fn push_log_resets_scroll() {
+        let mut app = App::new("Test", 1, 0);
+        app.push_log("First log".to_string());
+        app.log_scroll_offset = 10;
+
+        app.push_log("Second log".to_string());
+        assert_eq!(app.log_scroll_offset, 0);
+    }
+
+    #[test]
+    fn prev_log_navigation() {
+        let mut app = App::new("Test", 1, 0);
+        app.push_log("Log 1".to_string());
+        app.push_log("Log 2".to_string());
+        app.push_log("Log 3".to_string());
+        assert_eq!(app.current_log_index, 2);
+
+        app.prev_log();
+        assert_eq!(app.current_log_index, 1);
+
+        app.prev_log();
+        assert_eq!(app.current_log_index, 0);
+
+        // Can't go below 0
+        app.prev_log();
+        assert_eq!(app.current_log_index, 0);
+    }
+
+    #[test]
+    fn next_log_navigation() {
+        let mut app = App::new("Test", 1, 0);
+        app.push_log("Log 1".to_string());
+        app.push_log("Log 2".to_string());
+        app.push_log("Log 3".to_string());
+
+        // Go back first
+        app.current_log_index = 0;
+
+        app.next_log();
+        assert_eq!(app.current_log_index, 1);
+
+        app.next_log();
+        assert_eq!(app.current_log_index, 2);
+
+        // Can't go past last
+        app.next_log();
+        assert_eq!(app.current_log_index, 2);
+    }
+
+    #[test]
+    fn log_navigation_resets_scroll() {
+        let mut app = App::new("Test", 1, 0);
+        app.push_log("Log 1".to_string());
+        app.push_log("Log 2".to_string());
+        app.log_scroll_offset = 5;
+
+        app.prev_log();
+        assert_eq!(app.log_scroll_offset, 0);
+
+        app.log_scroll_offset = 5;
+        app.next_log();
+        assert_eq!(app.log_scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_up() {
+        let mut app = App::new("Test", 1, 0);
+        app.push_log("Line 1\nLine 2\nLine 3".to_string());
+        app.log_scroll_offset = 5;
+
+        app.scroll_up(2);
+        assert_eq!(app.log_scroll_offset, 3);
+
+        app.scroll_up(10); // More than offset, should saturate at 0
+        assert_eq!(app.log_scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_down() {
+        let mut app = App::new("Test", 1, 0);
+        app.push_log("Line 1\nLine 2\nLine 3".to_string());
+        app.log_scroll_offset = 0;
+
+        app.scroll_down(1);
+        assert_eq!(app.log_scroll_offset, 1);
+
+        app.scroll_down(10); // Should cap at content height (3 lines)
+        assert_eq!(app.log_scroll_offset, 3);
+    }
+
+    #[test]
+    fn latest_log_returns_correct_value() {
+        let mut app = App::new("Test", 1, 0);
+        assert!(app.latest_log().is_none());
+
+        app.push_log("First".to_string());
+        assert_eq!(app.latest_log(), Some("First"));
+
+        app.push_log("Second".to_string());
+        assert_eq!(app.latest_log(), Some("Second"));
+
+        // Even if viewing old log, latest_log returns the newest
+        app.current_log_index = 0;
+        assert_eq!(app.latest_log(), Some("Second"));
+    }
+
+    #[test]
+    fn current_log_empty_when_no_logs() {
+        let app = App::new("Test", 1, 0);
+        assert_eq!(app.current_log(), "");
+    }
+
+    #[test]
+    fn current_log_returns_indexed_log() {
+        let mut app = App::new("Test", 1, 0);
+        app.push_log("Log A".to_string());
+        app.push_log("Log B".to_string());
+
+        app.current_log_index = 0;
+        assert_eq!(app.current_log(), "Log A");
+
+        app.current_log_index = 1;
+        assert_eq!(app.current_log(), "Log B");
+    }
+}
