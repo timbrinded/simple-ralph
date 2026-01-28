@@ -107,13 +107,22 @@ pub fn run(
         app.status = "Invoking Claude...".to_string();
         terminal.draw(|f| app.draw(f)).expect("Failed to draw");
 
-        // Always use --session-id to ensure we resume the correct session
+        // Session management:
+        // - Turn 1 (fresh): Use --session-id to create new session with our UUID
+        // - Turn 2+: Use --resume to continue that specific session by ID
         // (using -c alone would continue the "last" session, which might not be ours
         // if the user ran other claude commands in between)
+        let (session_id, resume_session_id) = if session.is_fresh() {
+            (Some(session.id.as_str()), None)
+        } else {
+            (None, Some(session.id.as_str()))
+        };
+
         let opts = ClaudeOptions {
             prompt: &prompt,
-            session_id: Some(&session.id),
-            continue_session: false, // --session-id handles resumption
+            session_id,
+            resume_session_id,
+            continue_session: false,
             json_schema: Some(PLAN_RESPONSE_SCHEMA),
             bypass_permissions: true,
             output_format: Some("json"), // Ensures clean JSON envelope with structured_output
@@ -121,10 +130,17 @@ pub fn run(
 
         let mut child = launch_claude_with_options(&opts);
 
-        app.status = "Waiting for Claude... (q=quit, Ctrl+C=kill)".to_string();
+        // Update processing message if in processing state, otherwise use status
+        if app.processing {
+            app.set_processing(true, "Waiting for Claude...");
+        } else {
+            app.status = "Waiting for Claude... (q=quit, Ctrl+C=kill)".to_string();
+        }
 
         // Wait for Claude with event handling
         while child.try_wait().expect("Failed to check child").is_none() {
+            // Advance spinner for visual feedback
+            app.advance_spinner();
             terminal.draw(|f| app.draw(f)).expect("Failed to draw");
 
             if event::poll(Duration::from_millis(100)).expect("Poll failed")
@@ -134,6 +150,7 @@ pub fn run(
                     (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
                         child.kill().expect("Failed to kill Claude");
                         app.should_quit = true;
+                        app.set_processing(false, "");
                         app.status = "Interrupted by user".to_string();
                         break;
                     }
@@ -260,6 +277,9 @@ pub fn run(
             }
         };
 
+        // Clear processing state now that we have a response
+        app.set_processing(false, "");
+
         // Update app state from response
         app.update_from_response(&response);
         session.advance(response.phase);
@@ -310,6 +330,10 @@ pub fn run(
                         session.save()?;
                         break;
                     }
+
+                    // Immediately show processing state for user feedback
+                    app.set_processing(true, "Sending answers to Claude...");
+                    terminal.draw(|f| app.draw(f)).expect("Failed to draw");
 
                     // Store answers in session
                     for answer in &app.answers {

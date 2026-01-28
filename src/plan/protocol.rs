@@ -66,22 +66,32 @@ pub struct QuestionOption {
 }
 
 /// Context accumulated during exploration/working phases
+/// Uses serde_json::Value for flexible fields since Claude may return
+/// arbitrary structures. This is intermediate state - only the `prd` matters.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PhaseContext {
+    /// Codebase analysis - accepts any structure Claude provides
     #[serde(default)]
-    pub codebase_summary: Option<CodebaseSummary>,
+    pub codebase_summary: Option<serde_json::Value>,
 
+    /// Requirements - accepts any structure (Vec, object, etc.)
     #[serde(default)]
-    pub requirements: Option<Vec<Requirement>>,
+    pub requirements: Option<serde_json::Value>,
 
     #[serde(default)]
     pub quality_gates: Option<Vec<String>>,
 
     #[serde(default)]
     pub tasks: Option<Vec<Task>>,
+
+    /// Claude sometimes includes findings as a string
+    #[serde(default)]
+    pub findings: Option<String>,
 }
 
-/// Summary of the codebase structure
+/// Summary of the codebase structure (ideal format - used for testing/documentation)
+/// PhaseContext uses serde_json::Value for flexibility, but this documents the expected shape.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodebaseSummary {
     #[serde(default)]
@@ -97,7 +107,9 @@ pub struct CodebaseSummary {
     pub key_files: Option<Vec<String>>,
 }
 
-/// A requirement identified during planning
+/// A requirement identified during planning (ideal format - used for testing/documentation)
+/// PhaseContext uses serde_json::Value for flexibility, but this documents the expected shape.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Requirement {
     pub category: String,
@@ -385,5 +397,47 @@ mod tests {
         let json = r#"{"category": "test", "description": "Add tests", "steps": ["step1"]}"#;
         let task: Task = serde_json::from_str(json).unwrap();
         assert!(!task.passes);
+    }
+
+    #[test]
+    fn phase_context_accepts_arbitrary_requirements_object() {
+        // Claude sometimes returns requirements as an object instead of array
+        let json = r#"{
+            "requirements": {"region": "us-east", "framework": "axum"},
+            "codebase_summary": {"languages": ["Rust"], "extra_field": true}
+        }"#;
+        let context: PhaseContext = serde_json::from_str(json).unwrap();
+        assert!(context.requirements.is_some());
+        assert!(context.codebase_summary.is_some());
+    }
+
+    #[test]
+    fn complete_response_with_arbitrary_context_parses() {
+        // The actual error case: context has object requirements, but prd is valid
+        let json = r#"{
+            "phase": "complete",
+            "context": {
+                "requirements": {"region": "us-east", "framework": "axum"},
+                "findings": "Found existing auth module"
+            },
+            "prd": {
+                "name": "Test PRD",
+                "quality_gates": ["cargo test"],
+                "tasks": [{
+                    "category": "feature",
+                    "description": "Add feature",
+                    "steps": ["Step 1"]
+                }]
+            }
+        }"#;
+        let response: PlanResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.phase, PlanPhase::Complete);
+        // The prd should be parsed correctly despite arbitrary context
+        let prd = response.prd.unwrap();
+        assert_eq!(prd.name, "Test PRD");
+        // Context is present and parsed leniently
+        let ctx = response.context.unwrap();
+        assert!(ctx.requirements.is_some());
+        assert_eq!(ctx.findings, Some("Found existing auth module".to_string()));
     }
 }
