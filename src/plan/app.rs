@@ -400,7 +400,10 @@ impl PlanApp {
             let total = self.submitted_total;
             vec![
                 Span::styled(" | Submitted: ", Style::default().fg(Color::Gray)),
-                Span::styled(format!("{}/{}", answered, total), Style::default().fg(Color::Green)),
+                Span::styled(
+                    format!("{}/{}", answered, total),
+                    Style::default().fg(Color::Green),
+                ),
             ]
         } else if self.phase == PlanPhase::Asking && !self.questions.is_empty() {
             let answered = self.answered_count();

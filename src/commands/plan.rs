@@ -191,7 +191,10 @@ pub fn run(
                     // No structured_output - try Haiku fallback on the raw stdout
                     app.status = "No structured_output, trying Haiku normalization...".to_string();
                     terminal.draw(|f| app.draw(f)).expect("Failed to draw");
-                    app.push_log("Tier 1 failed: No structured_output in wrapper. Trying Haiku...".to_string());
+                    app.push_log(
+                        "Tier 1 failed: No structured_output in wrapper. Trying Haiku..."
+                            .to_string(),
+                    );
 
                     match normalize_json_with_haiku(&stdout, PLAN_RESPONSE_SCHEMA) {
                         Ok(normalized) => match serde_json::from_str(&normalized) {
