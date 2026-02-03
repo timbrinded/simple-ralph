@@ -130,26 +130,31 @@ impl PlanSession {
     }
 
     /// Merge context from a response
+    /// Since context fields are now flexible serde_json::Value, we just replace.
     pub fn merge_context(&mut self, context: PhaseContext) {
-        // Merge codebase summary (replace if newer)
+        // Replace codebase summary if newer
         if context.codebase_summary.is_some() {
             self.context.codebase_summary = context.codebase_summary;
         }
 
-        // Merge requirements (append new ones)
-        if let Some(reqs) = context.requirements {
-            let existing = self.context.requirements.get_or_insert_with(Vec::new);
-            existing.extend(reqs);
+        // Replace requirements if newer (was append, but with Value we just replace)
+        if context.requirements.is_some() {
+            self.context.requirements = context.requirements;
         }
 
-        // Merge quality gates (replace if newer)
+        // Replace quality gates if newer
         if context.quality_gates.is_some() {
             self.context.quality_gates = context.quality_gates;
         }
 
-        // Merge tasks (replace if newer)
+        // Replace tasks if newer
         if context.tasks.is_some() {
             self.context.tasks = context.tasks;
+        }
+
+        // Replace findings if newer
+        if context.findings.is_some() {
+            self.context.findings = context.findings;
         }
 
         self.updated_at = Utc::now();
@@ -255,47 +260,46 @@ mod tests {
         assert!(session.context.codebase_summary.is_none());
 
         let context = PhaseContext {
-            codebase_summary: Some(super::super::protocol::CodebaseSummary {
-                languages: Some(vec!["Rust".to_string()]),
-                frameworks: None,
-                structure: None,
-                key_files: None,
-            }),
+            codebase_summary: Some(serde_json::json!({
+                "languages": ["Rust"],
+                "frameworks": null
+            })),
             ..Default::default()
         };
         session.merge_context(context);
         assert!(session.context.codebase_summary.is_some());
-        assert_eq!(
-            session.context.codebase_summary.as_ref().unwrap().languages,
-            Some(vec!["Rust".to_string()])
-        );
+        let summary = session.context.codebase_summary.as_ref().unwrap();
+        assert_eq!(summary["languages"][0], "Rust");
     }
 
     #[test]
-    fn merge_context_appends_requirements() {
+    fn merge_context_replaces_requirements() {
         let mut session = PlanSession::new("/tmp/prd.json");
 
+        // Requirements can now be any JSON value - object or array
         let context1 = PhaseContext {
-            requirements: Some(vec![super::super::protocol::Requirement {
-                category: "feature".to_string(),
-                description: "Add auth".to_string(),
-                priority: None,
-            }]),
+            requirements: Some(serde_json::json!({
+                "region": "us-east",
+                "framework": "axum"
+            })),
             ..Default::default()
         };
         session.merge_context(context1);
-        assert_eq!(session.context.requirements.as_ref().unwrap().len(), 1);
+        assert!(session.context.requirements.is_some());
+        let reqs = session.context.requirements.as_ref().unwrap();
+        assert_eq!(reqs["region"], "us-east");
 
+        // Second merge replaces (not appends, since we can't append to arbitrary JSON)
         let context2 = PhaseContext {
-            requirements: Some(vec![super::super::protocol::Requirement {
-                category: "test".to_string(),
-                description: "Add tests".to_string(),
-                priority: None,
-            }]),
+            requirements: Some(serde_json::json!([
+                {"category": "test", "description": "Add tests"}
+            ])),
             ..Default::default()
         };
         session.merge_context(context2);
-        assert_eq!(session.context.requirements.as_ref().unwrap().len(), 2);
+        let reqs = session.context.requirements.as_ref().unwrap();
+        // Now it's an array
+        assert!(reqs.is_array());
     }
 
     #[test]

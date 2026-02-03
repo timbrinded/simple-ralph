@@ -9,6 +9,9 @@ pub struct ClaudeOptions<'a> {
     /// Session ID for --session-id flag (starts new named session)
     pub session_id: Option<&'a str>,
 
+    /// Session ID for --resume flag (resumes existing session by ID)
+    pub resume_session_id: Option<&'a str>,
+
     /// Whether to continue the previous session (-c flag)
     pub continue_session: bool,
 
@@ -33,12 +36,16 @@ pub fn launch_claude_with_options(opts: &ClaudeOptions) -> std::process::Child {
     }
 
     // Session management
-    if let Some(session_id) = opts.session_id {
+    // --session-id: Create new session with specific ID
+    // --resume: Resume existing session by ID
+    // -c: Continue most recent session (not used with --session-id or --resume)
+    if let Some(session_id) = opts.resume_session_id {
+        args.push("--resume");
+        args.push(session_id);
+    } else if let Some(session_id) = opts.session_id {
         args.push("--session-id");
         args.push(session_id);
-    }
-
-    if opts.continue_session {
+    } else if opts.continue_session {
         args.push("-c");
     }
 
@@ -122,7 +129,7 @@ Rules:
         .stderr(Stdio::piped())
         .spawn();
 
-    let mut child = match child {
+    let child = match child {
         Ok(c) => c,
         Err(e) => {
             return Err(NormalizationError {

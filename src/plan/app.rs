@@ -32,6 +32,21 @@ pub struct PlanApp {
     /// Whether we're in the initial idea input phase (before Claude)
     pub awaiting_idea: bool,
 
+    /// Whether we're in a processing state (between answer submission and Claude response)
+    pub processing: bool,
+
+    /// Message to display during processing
+    pub processing_message: String,
+
+    /// Spinner animation frame (0-7 for braille spinner)
+    pub spinner_frame: u8,
+
+    /// Number of answers submitted (captured when entering processing state)
+    pub submitted_count: usize,
+
+    /// Total questions count (captured when entering processing state)
+    pub submitted_total: usize,
+
     /// The user's idea/description input
     pub idea_input: String,
 
@@ -90,6 +105,11 @@ impl PlanApp {
             phase: PlanPhase::Exploring,
             status: String::from("Starting..."),
             awaiting_idea: false,
+            processing: false,
+            processing_message: String::new(),
+            spinner_frame: 0,
+            submitted_count: 0,
+            submitted_total: 0,
             idea_input: String::new(),
             idea_cursor: 0,
             questions: Vec::new(),
@@ -284,6 +304,30 @@ impl PlanApp {
         self.should_submit = false;
     }
 
+    /// Set processing state with a message
+    /// When activating, captures the current answer/question counts
+    pub fn set_processing(&mut self, active: bool, message: &str) {
+        self.processing = active;
+        self.processing_message = message.to_string();
+        if active {
+            self.spinner_frame = 0;
+            // Capture counts at the moment of submission
+            self.submitted_count = self.answered_count();
+            self.submitted_total = self.questions.len();
+        }
+    }
+
+    /// Advance spinner animation frame
+    pub fn advance_spinner(&mut self) {
+        self.spinner_frame = (self.spinner_frame + 1) % 8;
+    }
+
+    /// Get current spinner character (braille spinner)
+    fn spinner_char(&self) -> char {
+        const SPINNER_FRAMES: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
+        SPINNER_FRAMES[self.spinner_frame as usize]
+    }
+
     /// Push a log entry
     pub fn push_log(&mut self, log: String) {
         self.response_logs.push(log);
@@ -304,6 +348,12 @@ impl PlanApp {
         // Show idea input screen if awaiting initial idea
         if self.awaiting_idea {
             self.render_idea_input(frame, frame.area());
+            return;
+        }
+
+        // Show processing screen if in processing state
+        if self.processing {
+            self.render_processing(frame, frame.area());
             return;
         }
 
@@ -343,8 +393,19 @@ impl PlanApp {
         })
         .collect();
 
-        // Build progress indicator for asking phase
-        let progress_span = if self.phase == PlanPhase::Asking && !self.questions.is_empty() {
+        // Build progress indicator for asking phase (or processing state)
+        let progress_span = if self.processing {
+            // Use captured counts during processing (answers may be consumed)
+            let answered = self.submitted_count;
+            let total = self.submitted_total;
+            vec![
+                Span::styled(" | Submitted: ", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    format!("{}/{}", answered, total),
+                    Style::default().fg(Color::Green),
+                ),
+            ]
+        } else if self.phase == PlanPhase::Asking && !self.questions.is_empty() {
             let answered = self.answered_count();
             let total = self.questions.len();
             let color = if self.all_answered() {
@@ -721,6 +782,80 @@ impl PlanApp {
                 &mut self.log_scroll_state,
             );
         }
+    }
+
+    fn render_processing(&self, frame: &mut Frame, area: Rect) {
+        let [header_area, main_area, footer_area] = Layout::vertical([
+            Constraint::Length(5),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+
+        // Render header (reuse existing)
+        self.render_header(frame, header_area);
+
+        // Processing panel with spinner and status
+        // Use captured counts (answers may be consumed by take_answers())
+        let spinner = self.spinner_char();
+
+        let lines = vec![
+            Line::from(""),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    format!("         {} ", spinner),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    &self.processing_message,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!(
+                    "         Submitted {}/{} answers",
+                    self.submitted_count, self.submitted_total
+                ),
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(""),
+        ];
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title(" Processing ")
+            .title_style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .padding(Padding::horizontal(1));
+
+        let paragraph = Paragraph::new(Text::from(lines))
+            .block(block)
+            .alignment(ratatui::layout::Alignment::Left);
+
+        frame.render_widget(paragraph, main_area);
+
+        // Processing footer
+        let footer_spans = vec![
+            Span::styled(" ralph plan ", Style::default().fg(Color::Cyan)),
+            Span::styled("| ", Style::default().fg(Color::DarkGray)),
+            Span::styled("<Ctrl+C>", Style::default().fg(Color::Green)),
+            Span::styled(" cancel ", Style::default().fg(Color::Gray)),
+        ];
+
+        let footer =
+            Paragraph::new(Line::from(footer_spans)).style(Style::default().bg(Color::DarkGray));
+        frame.render_widget(footer, footer_area);
     }
 
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
@@ -1323,5 +1458,69 @@ mod tests {
         app.should_submit = true;
         app.reset_submit();
         assert!(!app.should_submit);
+    }
+
+    #[test]
+    fn set_processing_enables_state() {
+        let mut app = PlanApp::new();
+        assert!(!app.processing);
+
+        // Set up questions and answers before processing
+        app.set_questions(vec![
+            create_test_question("q1", true),
+            create_test_question("q2", true),
+        ]);
+        app.answers.push(Answer {
+            question_id: "q1".to_string(),
+            value: "A".to_string(),
+        });
+        app.answers.push(Answer {
+            question_id: "q2".to_string(),
+            value: "B".to_string(),
+        });
+
+        app.set_processing(true, "Testing...");
+        assert!(app.processing);
+        assert_eq!(app.processing_message, "Testing...");
+        assert_eq!(app.spinner_frame, 0);
+        // Verify counts were captured
+        assert_eq!(app.submitted_count, 2);
+        assert_eq!(app.submitted_total, 2);
+    }
+
+    #[test]
+    fn set_processing_clears_state() {
+        let mut app = PlanApp::new();
+        app.set_processing(true, "Working...");
+        app.spinner_frame = 5;
+
+        app.set_processing(false, "");
+        assert!(!app.processing);
+        assert_eq!(app.processing_message, "");
+    }
+
+    #[test]
+    fn advance_spinner_cycles() {
+        let mut app = PlanApp::new();
+        assert_eq!(app.spinner_frame, 0);
+
+        app.advance_spinner();
+        assert_eq!(app.spinner_frame, 1);
+
+        // Cycle through all frames
+        for _ in 0..7 {
+            app.advance_spinner();
+        }
+        assert_eq!(app.spinner_frame, 0); // Should wrap around
+    }
+
+    #[test]
+    fn spinner_char_returns_braille() {
+        let mut app = PlanApp::new();
+        // First frame should be '⠋'
+        assert_eq!(app.spinner_char(), '⠋');
+
+        app.spinner_frame = 4;
+        assert_eq!(app.spinner_char(), '⠼');
     }
 }
