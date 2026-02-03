@@ -60,6 +60,7 @@ pub fn launch_claude_with_options(opts: &ClaudeOptions) -> std::process::Child {
 
     Command::new("claude")
         .args(args)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -116,6 +117,7 @@ Rules:
 
     let child = Command::new("claude")
         .args(["--model", "haiku", "-p", &normalization_prompt])
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn();
