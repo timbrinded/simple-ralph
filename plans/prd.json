@@ -1,0 +1,5 @@
+{
+  "name": "build-screen-live-feedback",
+  "quality_gates": ["cargo test", "cargo clippy -- -D warnings", "cargo fmt --check"],
+  "tasks": []
+}

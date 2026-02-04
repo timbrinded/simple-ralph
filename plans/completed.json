@@ -1,0 +1,96 @@
+[
+  {
+    "category": "functional",
+    "description": "Add spinner_frame field and methods to App struct",
+    "steps": [
+      "Add spinner_frame: u8 field to App struct in src/app.rs",
+      "Add advance_spinner() method that increments frame mod 8",
+      "Add spinner_char() method returning braille char from SPINNER_FRAMES array",
+      "Initialize spinner_frame to 0 in App::new()",
+      "Run `cargo test app::tests::advance_spinner`"
+    ],
+    "completed_at": "2026-02-04"
+  },
+  {
+    "category": "functional",
+    "description": "Add loop_start_time field and elapsed timer methods to App struct",
+    "steps": [
+      "Add loop_start_time: Option<std::time::Instant> field to App struct",
+      "Add start_loop_timer() method that sets loop_start_time = Some(Instant::now())",
+      "Add elapsed_display() method that returns formatted string like '2m 34s'",
+      "Handle None case in elapsed_display() returning '0s'",
+      "Initialize loop_start_time to None in App::new()",
+      "Run `cargo test app::tests::elapsed_display`"
+    ],
+    "completed_at": "2026-02-04"
+  },
+  {
+    "category": "functional",
+    "description": "Update render_top_panel to display spinner before status message",
+    "steps": [
+      "Modify the status line in render_top_panel() to prepend spinner_char()",
+      "Status line should show: '⠋ Waiting for Claude...'",
+      "Verify spinner character appears in cyan or matching status color",
+      "Run `cargo build` to verify compilation"
+    ],
+    "completed_at": "2026-02-04"
+  },
+  {
+    "category": "functional",
+    "description": "Update render_top_panel to display elapsed time next to loop count",
+    "steps": [
+      "Modify the loop count line to include elapsed time",
+      "Format as 'Loop: #3 (2m 34s)' or 'Loop: #3 (45s)' for under a minute",
+      "Call elapsed_display() to get the formatted time string",
+      "Run `cargo build` to verify compilation"
+    ],
+    "completed_at": "2026-02-04"
+  },
+  {
+    "category": "functional",
+    "description": "Add Gauge progress bar widget to render_top_panel",
+    "steps": [
+      "Import Gauge from ratatui::widgets",
+      "Calculate progress ratio as completed_tasks / (completed_tasks + remaining_tasks)",
+      "Add Gauge widget with green fill color",
+      "Show label like '4/8 tasks' on the gauge",
+      "Position between PRD name and loop count lines",
+      "Run `cargo build` to verify compilation"
+    ],
+    "completed_at": "2026-02-04"
+  },
+  {
+    "category": "functional",
+    "description": "Update build.rs to advance spinner on each poll cycle",
+    "steps": [
+      "Inside the while child.try_wait() loop in build.rs",
+      "Call app.advance_spinner() after each terminal.draw()",
+      "Spinner should animate at ~10fps (100ms poll interval)",
+      "Run `cargo build` to verify compilation"
+    ],
+    "completed_at": "2026-02-04"
+  },
+  {
+    "category": "functional",
+    "description": "Update build.rs to start timer at beginning of each loop iteration",
+    "steps": [
+      "Call app.start_loop_timer() at the start of each loop iteration",
+      "Place call around line 27 near app.increment_loop()",
+      "Timer should reset at start of each new loop",
+      "Run `cargo build` to verify compilation"
+    ],
+    "completed_at": "2026-02-04"
+  },
+  {
+    "category": "reliability",
+    "description": "Add unit tests for spinner and timer methods",
+    "steps": [
+      "Add test advance_spinner_cycles() verifying 0-7 wrap to 0",
+      "Add test spinner_char_returns_braille() verifying correct chars",
+      "Add test start_loop_timer_sets_time() verifying Some value",
+      "Add test elapsed_display_formats_correctly() for various durations",
+      "Run `cargo test` and verify all new tests pass"
+    ],
+    "completed_at": "2026-02-04"
+  }
+]

@@ -4,10 +4,14 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
-        Block, BorderType, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
+        Block, BorderType, Borders, Gauge, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
         ScrollbarState, Wrap,
     },
 };
+use std::time::Instant;
+
+/// Braille spinner frames for animation
+const SPINNER_FRAMES: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
 
 pub struct App {
     pub prd_name: String,
@@ -21,6 +25,10 @@ pub struct App {
     pub current_log_index: usize,
     pub log_scroll_offset: usize,
     pub log_scroll_state: ScrollbarState,
+    /// Current frame index for spinner animation (0-7)
+    pub spinner_frame: u8,
+    /// Start time of the current loop iteration (for elapsed display)
+    pub loop_start_time: Option<Instant>,
 }
 
 impl App {
@@ -36,6 +44,40 @@ impl App {
             current_log_index: 0,
             log_scroll_offset: 0,
             log_scroll_state: ScrollbarState::default(),
+            spinner_frame: 0,
+            loop_start_time: None,
+        }
+    }
+
+    /// Advance the spinner to the next frame (wraps at 8)
+    pub fn advance_spinner(&mut self) {
+        self.spinner_frame = (self.spinner_frame + 1) % 8;
+    }
+
+    /// Get the current spinner character
+    pub fn spinner_char(&self) -> char {
+        SPINNER_FRAMES[self.spinner_frame as usize]
+    }
+
+    /// Start the loop timer (called at the beginning of each loop iteration)
+    pub fn start_loop_timer(&mut self) {
+        self.loop_start_time = Some(Instant::now());
+    }
+
+    /// Get a formatted string of elapsed time since loop started
+    /// Returns "0s" if timer hasn't been started
+    pub fn elapsed_display(&self) -> String {
+        match self.loop_start_time {
+            Some(start) => {
+                let elapsed = start.elapsed();
+                let secs = elapsed.as_secs();
+                if secs >= 60 {
+                    format!("{}m {}s", secs / 60, secs % 60)
+                } else {
+                    format!("{}s", secs)
+                }
+            }
+            None => "0s".to_string(),
         }
     }
 
@@ -65,30 +107,17 @@ impl App {
         let border_type = BorderType::Plain;
 
         let total_tasks = self.completed_tasks + self.remaining_tasks;
-        let progress_str = format!("{}/{}", self.completed_tasks, total_tasks);
         let loop_str = format!("#{}", self.loop_count);
+        let gauge_label = format!("{}/{} tasks", self.completed_tasks, total_tasks);
 
-        let lines = vec![
-            Line::from(vec![
-                Span::styled("PRD: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(&self.prd_name, Style::default().fg(Color::White)),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Progress: ", Style::default().fg(Color::White)),
-                Span::styled(progress_str, Style::default().fg(Color::Yellow)),
-                Span::styled(" tasks complete", Style::default().fg(Color::White)),
-            ]),
-            Line::from(vec![
-                Span::styled("Loop: ", Style::default().fg(Color::White)),
-                Span::styled(loop_str, Style::default().fg(Color::Cyan)),
-            ]),
-            Line::from(vec![
-                Span::styled("Status: ", Style::default().fg(Color::White)),
-                Span::styled(&self.status_message, Style::default().fg(Color::Gray)),
-            ]),
-        ];
+        // Calculate progress ratio (avoid division by zero)
+        let progress_ratio = if total_tasks > 0 {
+            self.completed_tasks as f64 / total_tasks as f64
+        } else {
+            0.0
+        };
 
+        // Outer block with borders
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(border_type)
@@ -98,11 +127,64 @@ impl App {
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
-            )
-            .padding(Padding::horizontal(1));
+            );
 
-        let paragraph = Paragraph::new(lines).block(block);
-        frame.render_widget(paragraph, area);
+        frame.render_widget(block, area);
+
+        // Inner area (inside borders)
+        let inner_area = area.inner(Margin {
+            horizontal: 2,
+            vertical: 1,
+        });
+
+        // Split inner area: PRD line, Gauge, Loop line, Status line
+        let [prd_area, gauge_area, loop_area, status_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(inner_area);
+
+        // PRD line
+        let prd_line = Line::from(vec![
+            Span::styled("PRD: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(&self.prd_name, Style::default().fg(Color::White)),
+        ]);
+        frame.render_widget(Paragraph::new(prd_line), prd_area);
+
+        // Progress Gauge
+        let gauge = Gauge::default()
+            .gauge_style(Style::default().fg(Color::Green).bg(Color::DarkGray))
+            .ratio(progress_ratio)
+            .label(Span::styled(
+                gauge_label,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        frame.render_widget(gauge, gauge_area);
+
+        // Loop line with elapsed time
+        let loop_line = Line::from(vec![
+            Span::styled("Loop: ", Style::default().fg(Color::White)),
+            Span::styled(loop_str, Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!(" ({})", self.elapsed_display()),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(loop_line), loop_area);
+
+        // Status line with spinner
+        let status_line = Line::from(vec![
+            Span::styled(
+                format!("{} ", self.spinner_char()),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(&self.status_message, Style::default().fg(Color::Gray)),
+        ]);
+        frame.render_widget(Paragraph::new(status_line), status_area);
     }
 
     fn render_log_panel(&mut self, frame: &mut Frame, area: Rect) {
@@ -375,6 +457,62 @@ mod tests {
         assert!(app.iteration_logs.is_empty());
         assert_eq!(app.current_log_index, 0);
         assert_eq!(app.log_scroll_offset, 0);
+        assert_eq!(app.spinner_frame, 0);
+        assert!(app.loop_start_time.is_none());
+    }
+
+    #[test]
+    fn advance_spinner_cycles() {
+        let mut app = App::new("Test", 1, 0);
+        assert_eq!(app.spinner_frame, 0);
+
+        // Advance through all 8 frames
+        for i in 1..8 {
+            app.advance_spinner();
+            assert_eq!(app.spinner_frame, i);
+        }
+
+        // Should wrap back to 0
+        app.advance_spinner();
+        assert_eq!(app.spinner_frame, 0);
+    }
+
+    #[test]
+    fn spinner_char_returns_braille() {
+        let mut app = App::new("Test", 1, 0);
+
+        // Verify each frame returns the correct braille character
+        let expected = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
+        for (i, &ch) in expected.iter().enumerate() {
+            app.spinner_frame = i as u8;
+            assert_eq!(app.spinner_char(), ch, "Frame {} should be '{}'", i, ch);
+        }
+    }
+
+    #[test]
+    fn start_loop_timer_sets_time() {
+        let mut app = App::new("Test", 1, 0);
+        assert!(app.loop_start_time.is_none());
+
+        app.start_loop_timer();
+        assert!(app.loop_start_time.is_some());
+    }
+
+    #[test]
+    fn elapsed_display_formats_correctly() {
+        let mut app = App::new("Test", 1, 0);
+
+        // Before starting timer, should return "0s"
+        assert_eq!(app.elapsed_display(), "0s");
+
+        // Start timer and check immediately (should be 0s or 1s)
+        app.start_loop_timer();
+        let display = app.elapsed_display();
+        assert!(
+            display == "0s" || display == "1s",
+            "Expected 0s or 1s, got {}",
+            display
+        );
     }
 
     #[test]

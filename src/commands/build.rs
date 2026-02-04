@@ -25,6 +25,7 @@ pub fn run(prd_path: &str, max_loops: u64) {
         app.reload_progress(prd.tasks.len(), completed.map_or(0, |t| t.len()));
 
         app.increment_loop();
+        app.start_loop_timer();
         app.set_status("Spawning Claude...");
         terminal.draw(|f| app.draw(f)).expect("Failed to draw");
 
@@ -35,6 +36,7 @@ pub fn run(prd_path: &str, max_loops: u64) {
 
         while child.try_wait().expect("Failed to check child").is_none() {
             terminal.draw(|f| app.draw(f)).expect("Failed to draw");
+            app.advance_spinner();
 
             if event::poll(Duration::from_millis(100)).expect("Poll failed")
                 && let Event::Key(key) = event::read().expect("Failed to read event")
