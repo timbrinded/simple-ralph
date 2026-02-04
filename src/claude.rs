@@ -74,15 +74,6 @@ pub fn launch_claude_with_options(opts: &ClaudeOptions) -> std::process::Child {
         .expect("Error spawning claude code!")
 }
 
-/// Launch Claude Code with simple prompt (backward compatible)
-pub fn launch_claude(prompt: &str) -> std::process::Child {
-    launch_claude_with_options(&ClaudeOptions {
-        prompt,
-        bypass_permissions: true,
-        ..Default::default()
-    })
-}
-
 /// Error returned when Haiku normalization fails
 #[derive(Debug)]
 pub struct NormalizationError {
