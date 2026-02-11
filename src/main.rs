@@ -28,6 +28,10 @@ enum Commands {
         /// Maximum number of loops to run
         #[arg(short = 'l', long)]
         max_loops: Option<u64>,
+
+        /// Maximum agentic turns per Claude session (prevents hung sessions)
+        #[arg(short = 't', long)]
+        max_turns: Option<u32>,
     },
 
     /// Generate a new PRD through interactive multi-turn conversation
@@ -57,8 +61,9 @@ fn main() {
         Some(Commands::Build {
             prd_path,
             max_loops,
+            max_turns,
         }) => {
-            commands::build::run(&prd_path, max_loops.unwrap_or(u64::MAX));
+            commands::build::run(&prd_path, max_loops.unwrap_or(u64::MAX), max_turns);
         }
         Some(Commands::Plan {
             output,

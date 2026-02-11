@@ -126,6 +126,7 @@ pub fn run(
             json_schema: Some(PLAN_RESPONSE_SCHEMA),
             bypass_permissions: true,
             output_format: Some("json"), // Ensures clean JSON envelope with structured_output
+            ..Default::default()
         };
 
         let mut child = launch_claude_with_options(&opts);

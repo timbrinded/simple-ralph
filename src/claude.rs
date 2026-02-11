@@ -23,6 +23,9 @@ pub struct ClaudeOptions<'a> {
 
     /// Output format (--output-format flag): "text", "json", or "stream-json"
     pub output_format: Option<&'a str>,
+
+    /// Maximum number of agentic turns before Claude stops (--max-turns flag)
+    pub max_turns: Option<u32>,
 }
 
 /// Launch Claude Code with the given options
@@ -59,6 +62,14 @@ pub fn launch_claude_with_options(opts: &ClaudeOptions) -> std::process::Child {
     if let Some(format) = opts.output_format {
         args.push("--output-format");
         args.push(format);
+    }
+
+    // Max turns
+    let max_turns_str;
+    if let Some(turns) = opts.max_turns {
+        max_turns_str = turns.to_string();
+        args.push("--max-turns");
+        args.push(&max_turns_str);
     }
 
     // Prompt

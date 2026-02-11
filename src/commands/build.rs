@@ -75,18 +75,23 @@ fn is_retryable_error(stderr: &str) -> bool {
         || stderr_lower.contains("rate limit")
 }
 
+/// Default max turns per Claude session (generous for complex tasks, catches infinite loops)
+const DEFAULT_MAX_TURNS: u32 = 200;
+
 /// Run Claude and wait for output, handling keyboard events
 /// Returns the result of the Claude invocation
 fn run_claude_iteration<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     prompt: &str,
+    max_turns: u32,
 ) -> ClaudeResult {
     let mut child = claude::launch_claude_with_options(&claude::ClaudeOptions {
         prompt,
         bypass_permissions: true,
         output_format: Some("json"),
         json_schema: Some(BUILD_OUTPUT_SCHEMA),
+        max_turns: Some(max_turns),
         ..Default::default()
     });
 
@@ -174,12 +179,15 @@ fn run_claude_iteration<B: ratatui::backend::Backend>(
                 ClaudeResult::ParseError(format!("No structured output:\n{}", stdout))
             }
         }
-        Err(e) => ClaudeResult::ParseError(format!("Parse error: {}\n\nRaw output:\n{}", e, stdout)),
+        Err(e) => {
+            ClaudeResult::ParseError(format!("Parse error: {}\n\nRaw output:\n{}", e, stdout))
+        }
     }
 }
 
 /// Run the build command - executes PRD tasks in a loop
-pub fn run(prd_path: &str, max_loops: u64) {
+pub fn run(prd_path: &str, max_loops: u64, max_turns: Option<u32>) {
+    let max_turns = max_turns.unwrap_or(DEFAULT_MAX_TURNS);
     let prd = prd::load_prd_from_file(prd_path);
     let completed = prd::load_completed_tasks_from_file(prd_path);
     let remaining = prd.tasks.len();
@@ -240,7 +248,7 @@ pub fn run(prd_path: &str, max_loops: u64) {
             terminal.draw(|f| app.draw(f)).expect("Failed to draw");
             app.advance_spinner();
 
-            match run_claude_iteration(&mut terminal, &mut app, &prompt) {
+            match run_claude_iteration(&mut terminal, &mut app, &prompt, max_turns) {
                 ClaudeResult::Success(result) => {
                     // Format for display
                     let display_log = format!(
@@ -372,7 +380,8 @@ mod tests {
 
     #[test]
     fn parse_claude_wrapper_error_case() {
-        let json = r#"{"type":"result","subtype":"error","is_error":true,"structured_output":null}"#;
+        let json =
+            r#"{"type":"result","subtype":"error","is_error":true,"structured_output":null}"#;
         let wrapper: ClaudeJsonOutput = serde_json::from_str(json).unwrap();
         assert!(wrapper.is_error);
         assert!(wrapper.structured_output.is_none());
